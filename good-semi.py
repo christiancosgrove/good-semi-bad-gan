@@ -201,13 +201,9 @@ for epoch in range(1000):
     permdy = trainy[perm_labeled]
 
     for mb in range(nmb):
-
-
-        perm_lab = np.random.choice(lab_inds, size=mb_size, replace=False)
-
         X_mb = permdx[mb*mb_size:(mb+1)*mb_size]
         X_mb_lab = permdx_lab[mb*mb_size:(mb+1)*mb_size]
-        Y_mb = permdy[perm_lab]
+        Y_mb = permdy[mb*mb_size:(mb+1)*mb_size]
 
         z_mb = sample_z(mb_size, z_dim)
 
