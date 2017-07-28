@@ -15,6 +15,7 @@ parser.add_argument('--data_dir', type=str, default='../datasets/cifar')
 parser.add_argument('--checkpoint_dir', type=str, default="./checkpoints")
 parser.add_argument('--images_dir', type=str, default="./out")
 parser.add_argument('--load', dest='LOAD', action='store_true')
+parser.add_argument('--pull_away', dest='pull_away', action='store_true')
 args = parser.parse_args()
 print(args)
 
@@ -58,6 +59,8 @@ X_ = tf.placeholder(tf.float32, shape=[mb_size, channels, image_width, image_wid
 X_lab = tf.placeholder(tf.float32, shape=[mb_size, channels, image_width, image_width])
 Y_ = tf.placeholder(tf.int64, shape=[mb_size])
 z_ = tf.placeholder(tf.float32, shape=[mb_size, z_dim])
+# z_prime1 = tf.random_uniform(shape=[mb_size, z_dim], minval=-1, maxval=1)
+# z_prime2 = tf.random_uniform(shape=[mb_size, z_dim], minval=-1, maxval=1)
 trnow = tf.placeholder(tf.bool) #is training now?
 
 def lrelu(x, leak=0.2, name="lrelu"):
@@ -75,16 +78,16 @@ def convlayer_t(layer, filter_size, stride, filters, bias=True, nonlinearity=lre
 
 #transpoose convolution (deconvolution)
 def bn_convlayer_t(layer, filter_size, stride, filters, bias=True, nonlinearity=lrelu):
-    return tf.contrib.layers.batch_norm(tf.layers.conv2d_transpose(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', activation=nonlinearity, strides=(stride,stride), use_bias=bias, data_format='channels_first'), is_training=trnow, fused=True, data_format='NCHW')
+    return tf.contrib.layers.batch_norm(tf.layers.conv2d_transpose(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', strides=(stride,stride), use_bias=bias, data_format='channels_first'), is_training=trnow, fused=True, data_format='NCHW', activation_fn=nonlinearity)
 
 def bn_convlayer(layer, filter_size, stride, filters, bias=True, nonlinearity=lrelu):
-    return tf.contrib.layers.batch_norm(tf.layers.conv2d(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', activation=nonlinearity, strides=(stride,stride), use_bias=bias, data_format='channels_first'), is_training=trnow, fused=True, data_format='NCHW')
+    return tf.contrib.layers.batch_norm(tf.layers.conv2d(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', strides=(stride,stride), use_bias=bias, data_format='channels_first'), is_training=trnow, fused=True, data_format='NCHW', activation_fn=nonlinearity)
 
 def dense(layer, units, bias=True, nonlinearity=lrelu):
     return tf.layers.dense(inputs=layer, units=units, activation=nonlinearity, use_bias=bias)
 
 def bn_dense(layer, units, bias=True, nonlinearity=lrelu):
-    return tf.contrib.layers.batch_norm(tf.layers.dense(inputs=layer, units=units, activation=nonlinearity, use_bias=bias), is_training=trnow, fused=True, data_format='NCHW')
+    return tf.contrib.layers.batch_norm(tf.layers.dense(inputs=layer, units=units, use_bias=bias), is_training=trnow, fused=True, data_format='NCHW', activation_fn=nonlinearity)
 
 def dropout_layer(layer, rate):
     return tf.layers.dropout(inputs=layer, rate=rate, training=trnow)
@@ -93,8 +96,8 @@ def global_pool(layer, old_width):
     return tf.squeeze(tf.layers.average_pooling2d(layer, [old_width, old_width], [old_width, old_width], data_format='channels_first'))
 
 
-def G(z):
-    with tf.variable_scope('G_'):
+def G(z, reuse=False):
+    with tf.variable_scope('G_', reuse=reuse):
         h = bn_dense(z, 4*4*512, bias=False)
         h = tf.reshape(h, (mb_size, 512, 4, 4))
         h = bn_convlayer_t(h, 5, 2, 256, bias=False)
@@ -145,6 +148,14 @@ D_loss = D_loss_unl+D_loss_lab
 
 G_loss = tf.reduce_mean(tf.square(tf.reduce_mean(d_net_real_feat, axis=0)-tf.reduce_mean(d_net_fake_feat, axis=0)))
 
+if args.pull_away:
+    #pull-away term
+    feat_norm = d_net_fake_feat / tf.norm(d_net_fake_feat, axis=1, keep_dims=True)
+    G_pt = tf.tensordot(feat_norm, feat_norm, axes=[[1],[1]])
+    G_pt = tf.reduce_mean(G_pt)
+    print(G_pt.get_shape())
+
+    G_loss += G_pt
 
 update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
 with tf.control_dependencies(update_ops):
@@ -207,8 +218,8 @@ for epoch in range(1000):
 
         z_mb = sample_z(mb_size, z_dim)
 
-        _, D_loss_curr = sess.run(
-            [D_solver, D_loss], feed_dict={X_: X_mb, z_: z_mb, X_lab: X_mb_lab, Y_: Y_mb, trnow:True}
+        _, D_loss_curr, D_loss_lab_curr = sess.run(
+            [D_solver, D_loss, D_loss_lab], feed_dict={X_: X_mb, z_: z_mb, X_lab: X_mb_lab, Y_: Y_mb, trnow:True}
         )
 
         _, G_loss_curr = sess.run(
@@ -232,5 +243,5 @@ for epoch in range(1000):
     saver.save(sess=sess,save_path=os.path.join(args.checkpoint_dir,'checkpoint'), global_step=mb)
 
     print('')
-    print('e: {}\ttime: {:.6}\tD_loss: {:.4}\tG_loss: {:.4}\terr:{:.4}'
-          .format(epoch, time.time()-timer, D_loss_curr, G_loss_curr, err))
+    print('e: {}\ttime: {:.6}\tD_loss: {:.4}\tD_loss_lab: {:.4}\tG_loss: {:.4}\terr:{:.4}'
+          .format(epoch, time.time()-timer, D_loss_curr, D_loss_lab_curr, G_loss_curr, err))
