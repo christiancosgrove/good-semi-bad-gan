@@ -37,6 +37,7 @@ def plot(samples):
         ax.set_yticklabels([])
         ax.set_aspect('equal')
         sample = sample * 0.5 + 0.5
+        sample = np.transpose(sample, (1, 2, 0))
         plt.imshow(sample)
 
     return fig
@@ -53,8 +54,8 @@ BETA2 = 1e-3
 NUM_CLASSES = 10
 
 
-X_ = tf.placeholder(tf.float32, shape=[mb_size, image_width, image_width, channels])
-X_lab = tf.placeholder(tf.float32, shape=[mb_size, image_width, image_width, channels])
+X_ = tf.placeholder(tf.float32, shape=[mb_size, channels, image_width, image_width])
+X_lab = tf.placeholder(tf.float32, shape=[mb_size, channels, image_width, image_width])
 Y_ = tf.placeholder(tf.int64, shape=[mb_size])
 z_ = tf.placeholder(tf.float32, shape=[mb_size, z_dim])
 trnow = tf.placeholder(tf.bool) #is training now?
@@ -66,46 +67,44 @@ def lrelu(x, leak=0.2, name="lrelu"):
          return f1 * x + f2 * tf.abs(x)
 
 def convlayer(layer, filter_size, stride, filters, bias=True, nonlinearity=lrelu):
-    return tf.layers.conv2d(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', activation=nonlinearity, strides=(stride,stride), use_bias=bias)
+    return tf.layers.conv2d(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', activation=nonlinearity, strides=(stride,stride), use_bias=bias, data_format='channels_first')
 
 #transpoose convolution (deconvolution)
 def convlayer_t(layer, filter_size, stride, filters, bias=True, nonlinearity=lrelu):
-    return tf.layers.conv2d_transpose(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', activation=nonlinearity, strides=(stride,stride), use_bias=bias)
+    return tf.layers.conv2d_transpose(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', activation=nonlinearity, strides=(stride,stride), use_bias=bias, data_format='channels_first')
 
 #transpoose convolution (deconvolution)
 def bn_convlayer_t(layer, filter_size, stride, filters, bias=True, nonlinearity=lrelu):
-    return tf.contrib.layers.batch_norm(tf.layers.conv2d_transpose(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', activation=nonlinearity, strides=(stride,stride), use_bias=bias), is_training=trnow, fused=True)
+    return tf.contrib.layers.batch_norm(tf.layers.conv2d_transpose(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', activation=nonlinearity, strides=(stride,stride), use_bias=bias, data_format='channels_first'), is_training=trnow, fused=True, data_format='NCHW')
 
 def bn_convlayer(layer, filter_size, stride, filters, bias=True, nonlinearity=lrelu):
-    return tf.contrib.layers.batch_norm(tf.layers.conv2d(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', activation=nonlinearity, strides=(stride,stride), use_bias=bias), is_training=trnow, fused=True)
+    return tf.contrib.layers.batch_norm(tf.layers.conv2d(inputs=layer, filters=filters, kernel_size=[filter_size,filter_size], padding='same', activation=nonlinearity, strides=(stride,stride), use_bias=bias, data_format='channels_first'), is_training=trnow, fused=True, data_format='NCHW')
 
 def dense(layer, units, bias=True, nonlinearity=lrelu):
     return tf.layers.dense(inputs=layer, units=units, activation=nonlinearity, use_bias=bias)
 
 def bn_dense(layer, units, bias=True, nonlinearity=lrelu):
-    return tf.contrib.layers.batch_norm(tf.layers.dense(inputs=layer, units=units, activation=nonlinearity, use_bias=bias), is_training=trnow, fused=True)
+    return tf.contrib.layers.batch_norm(tf.layers.dense(inputs=layer, units=units, activation=nonlinearity, use_bias=bias), is_training=trnow, fused=True, data_format='NCHW')
 
 def dropout_layer(layer, rate):
     return tf.layers.dropout(inputs=layer, rate=rate, training=trnow)
 
 def global_pool(layer, old_width):
-    return tf.squeeze(tf.layers.average_pooling2d(layer, [old_width, old_width], [old_width, old_width]))
+    return tf.squeeze(tf.layers.average_pooling2d(layer, [old_width, old_width], [old_width, old_width], data_format='channels_first'))
 
 
 def G(z):
     with tf.variable_scope('G_'):
         h = bn_dense(z, 4*4*512, bias=False)
-        h = tf.reshape(h, (mb_size, 4, 4, 512))
+        h = tf.reshape(h, (mb_size, 512, 4, 4))
         h = bn_convlayer_t(h, 5, 2, 256, bias=False)
         h = bn_convlayer_t(h, 5, 2, 128, bias=False)
-        # h = bn_convlayer_t(h, 5, 2, 64, bias=False)
-        h = tf.layers.conv2d_transpose(inputs=h, filters=channels, kernel_size=[5,5], padding='same', activation=tf.nn.tanh, strides=(2,2), use_bias=True)
+        h = tf.layers.conv2d_transpose(inputs=h, filters=channels, kernel_size=[5,5], padding='same', activation=tf.nn.tanh, strides=(2,2), use_bias=True, data_format='channels_first')
         return h
 
 
 def D(X, reuse=False): #discriminator
     with tf.variable_scope('D_', reuse=reuse):
-        #image head
         h_X = dropout_layer(X, 0.2)
         h_X = convlayer(h_X, 3, 1, 64)
         h_X = convlayer(h_X, 3, 1, 64)
@@ -141,9 +140,7 @@ theta_G = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='G_')
 theta_D = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='D_')
 
 D_loss_unl = -tf.reduce_mean(l_real) + tf.reduce_mean(tf.nn.softplus(l_real)) + tf.reduce_mean(tf.nn.softplus(l_fake))
-
 D_loss_lab = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=d_net_lab, labels=Y_))
-
 D_loss = D_loss_unl+D_loss_lab
 
 G_loss = tf.reduce_mean(tf.square(tf.reduce_mean(d_net_real_feat, axis=0)-tf.reduce_mean(d_net_fake_feat, axis=0)))
@@ -162,7 +159,7 @@ error_op = 1.0 - tf.reduce_mean(tf.cast(tf.equal(tf.argmax(d_net_lab, axis=1), Y
 
 
 config = tf.ConfigProto()
-config.gpu_options.allow_growth = True
+# config.gpu_options.allow_growth = True
 sess = tf.Session(config=config)
 sess.run(tf.global_variables_initializer())
 
@@ -238,8 +235,6 @@ for epoch in range(1000):
 
     saver.save(sess=sess,save_path=os.path.join(args.checkpoint_dir,'checkpoint'), global_step=mb)
 
-    print(G_loss_curr)
-    print(D_loss_curr)
     print('')
     print('e: {}\ttime: {:.6}\tD_loss: {:.4}\tG_loss: {:.4}\terr:{:.4}'
           .format(epoch, time.time()-timer, D_loss_curr, G_loss_curr, err))

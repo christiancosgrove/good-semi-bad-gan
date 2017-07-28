@@ -26,7 +26,10 @@ def unpickle(file):
     fo = open(file, 'rb')
     d = pickle.load(fo, encoding="bytes")
     fo.close()
-    return {'x': np.cast[np.float32]((-127.5 + np.transpose(d[b'data'].reshape((10000,3,32,32)), (0,2,3,1)))/128.), 'y': np.array(d[b'labels']).astype(np.uint8)}
+    # nhwc
+    # return {'x': np.cast[np.float32]((-127.5 + np.transpose(d[b'data'].reshape((10000,3,32,32)), (0,2,3,1)))/128.), 'y': np.array(d[b'labels']).astype(np.uint8)}
+    # nchw
+    return {'x': np.cast[np.float32]((-127.5 + d[b'data'].reshape((10000,3,32,32)))/128.), 'y': np.array(d[b'labels']).astype(np.uint8)}
 
 #load cifar
 def load(data_dir, subset='train'):
